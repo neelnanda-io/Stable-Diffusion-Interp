@@ -83,6 +83,7 @@ First, we import the necessary libraries, define a config class, and provide a h
 from neel.imports import *
 from neel_plotly import *
 import torch
+
 torch.set_grad_enabled(False)
 # %%
 
@@ -133,7 +134,6 @@ class StableDiffusionConfig:  # Stable diffusion config
     sched_beta_end: float = 0.012
     sched_beta_schedule: str = "scaled_linear"
     sched_num_train_timesteps: int = 1000
-    
 
     # def __init__(self, generator: t.Generator):
     #     self.generator = generator
@@ -206,7 +206,6 @@ Now, we're ready to start building the model. There are only a few parts to inst
 # %%
 
 
-
 class Pretrained(nn.Module):
     def __init__(self):
         super().__init__()
@@ -260,6 +259,8 @@ Using the scheduler parameters defined in the config at the beginning (`sched_`)
 
 
 """
+
+
 # %%
 def get_scheduler(config: StableDiffusionConfig) -> LMSDiscreteScheduler:
     "SOLUTION"
@@ -334,7 +335,9 @@ def stable_diffusion_inference(
     images = pretrained.vae.decode(latents / 0.18215).sample
     # print(images)
     images = (images * 255 / 2 + 255 / 2).clamp(0, 255)
-    images = einops.rearrange(images, "batch rgb height width -> batch height width rgb")
+    images = einops.rearrange(
+        images, "batch rgb height width -> batch height width rgb"
+    )
     # images = images.detach().cpu().permute(0, 2, 3, 1).numpy().round().astype("uint8")
     # pil_images = ([Image.fromarray(image) for image in images])
     return images
@@ -367,10 +370,14 @@ if MAIN:
     SEED = 1
     s = time.time()
     config = StableDiffusionConfig(
-        generator=t.manual_seed(SEED),
-        num_inference_steps=10
+        generator=t.manual_seed(SEED), num_inference_steps=10
     )  # Pass in seed generator to create the initial latent noise
-    prompt = ["A digital illustration of a medieval town", "A digital illustration of a Greek town", "A digital illustration of a modern town", "A digital illustration of a prehistoric town"]
+    prompt = [
+        "A digital illustration of a medieval town",
+        "A digital illustration of a Greek town",
+        "A digital illustration of a modern town",
+        "A digital illustration of a prehistoric town",
+    ]
     latents = latent_sample(config, len(prompt))
     images = stable_diffusion_inference(pretrained, config, prompt, latents)
     print(time.time() - s)
@@ -391,132 +398,132 @@ Please complete the implementation of `interpolate_embeddings()` as described. H
 """
 
 
-def interpolate_embeddings(concat_embeddings: t.Tensor, scale_factor: int) -> t.Tensor:
-    """
-    Returns a tensor with `scale_factor`-many interpolated tensors between each pair of adjacent
-    embeddings.
-    concat_embeddings: t.Tensor - Contains uncond_embeddings and text_embeddings concatenated together
-    scale_factor: int - Number of interpolations between pairs of points
-    out: t.Tensor - shape: [2 * scale_factor * (concat_embeddings.shape[0]/2 - 1), *concat_embeddings.shape[1:]]
-    """
-    if "SOLUTION":
-        uncond_embeddings, text_embeddings = concat_embeddings.chunk(2)
-        uncond_embeddings = uncond_embeddings.to(DEVICE)
-        text_embeddings = text_embeddings.to(DEVICE)
-        num_prompts = text_embeddings.shape[0]
-        assert num_prompts > 1
-        to_concat = []
-        to_concat.append(uncond_embeddings[:-1].repeat(scale_factor, 1, 1))
-        for i in range(num_prompts - 1):
-            start, end = text_embeddings[i], text_embeddings[i + 1]
-            lin = t.linspace(0.0, 1.0, scale_factor).reshape(-1, 1, 1).to(DEVICE)
-            to_concat.append(start + lin * (end - start))
-        out = t.concat(to_concat)
-    assert out.shape == (
-        2 * scale_factor * (num_prompts - 1),
-        *text_embeddings.shape[1:],
-    )
-    return out
+# def interpolate_embeddings(concat_embeddings: t.Tensor, scale_factor: int) -> t.Tensor:
+#     """
+#     Returns a tensor with `scale_factor`-many interpolated tensors between each pair of adjacent
+#     embeddings.
+#     concat_embeddings: t.Tensor - Contains uncond_embeddings and text_embeddings concatenated together
+#     scale_factor: int - Number of interpolations between pairs of points
+#     out: t.Tensor - shape: [2 * scale_factor * (concat_embeddings.shape[0]/2 - 1), *concat_embeddings.shape[1:]]
+#     """
+#     if "SOLUTION":
+#         uncond_embeddings, text_embeddings = concat_embeddings.chunk(2)
+#         uncond_embeddings = uncond_embeddings.to(DEVICE)
+#         text_embeddings = text_embeddings.to(DEVICE)
+#         num_prompts = text_embeddings.shape[0]
+#         assert num_prompts > 1
+#         to_concat = []
+#         to_concat.append(uncond_embeddings[:-1].repeat(scale_factor, 1, 1))
+#         for i in range(num_prompts - 1):
+#             start, end = text_embeddings[i], text_embeddings[i + 1]
+#             lin = t.linspace(0.0, 1.0, scale_factor).reshape(-1, 1, 1).to(DEVICE)
+#             to_concat.append(start + lin * (end - start))
+#         out = t.concat(to_concat)
+#     assert out.shape == (
+#         2 * scale_factor * (num_prompts - 1),
+#         *text_embeddings.shape[1:],
+#     )
+#     return out
 
 
-def run_interpolation(
-    prompts: list[str], scale_factor: int, batch_size: int, latent_fn: Callable
-) -> list[Image.Image]:
-    SEED = 1
-    config = StableDiffusionConfig(
-        t.manual_seed(SEED)
-    )  # Pass in seed generator to create the initial latent noise
-    concat_embeddings = embed_text(pretrained, prompts)
-    uncond_interp, text_interp = interpolate_embeddings(
-        concat_embeddings, scale_factor
-    ).chunk(2)
-    split_interp_emb = t.split(text_interp, batch_size, dim=0)
-    interpolated_images = []
-    for t_emb in tqdm(split_interp_emb):
-        concat_split = t.concat([uncond_interp[: t_emb.shape[0]], t_emb])
-        config = StableDiffusionConfig(t.manual_seed(SEED))
-        latents = latent_fn(config, t_emb.shape[0])
-        interpolated_images += stable_diffusion_inference(
-            pretrained, config, concat_split, latents
-        )
-    return interpolated_images
+# def run_interpolation(
+#     prompts: list[str], scale_factor: int, batch_size: int, latent_fn: Callable
+# ) -> list[Image.Image]:
+#     SEED = 1
+#     config = StableDiffusionConfig(
+#         t.manual_seed(SEED)
+#     )  # Pass in seed generator to create the initial latent noise
+#     concat_embeddings = embed_text(pretrained, prompts)
+#     uncond_interp, text_interp = interpolate_embeddings(
+#         concat_embeddings, scale_factor
+#     ).chunk(2)
+#     split_interp_emb = t.split(text_interp, batch_size, dim=0)
+#     interpolated_images = []
+#     for t_emb in tqdm(split_interp_emb):
+#         concat_split = t.concat([uncond_interp[: t_emb.shape[0]], t_emb])
+#         config = StableDiffusionConfig(t.manual_seed(SEED))
+#         latents = latent_fn(config, t_emb.shape[0])
+#         interpolated_images += stable_diffusion_inference(
+#             pretrained, config, concat_split, latents
+#         )
+#     return interpolated_images
 
 
-# %%
-"""
-## Prompt Interpolation
+# # %%
+# """
+# ## Prompt Interpolation
 
-Finally, if you've implemented Stable Diffusion correctly, you're ready to play with prompt interpolation. Go ahead and fiddle with the prompts and interpolation scaling factor below, and be sure to share your favorite results on Slack!
+# Finally, if you've implemented Stable Diffusion correctly, you're ready to play with prompt interpolation. Go ahead and fiddle with the prompts and interpolation scaling factor below, and be sure to share your favorite results on Slack!
 
-`scale_factor` indicates the number of images between each consecutive prompt.
-"""
-if MAIN:
-    prompts = [
-        "a photograph of a cat on a lawn",
-        "a photograph of a dog on a lawn",
-        "a photograph of a bunny on a lawn",
-    ]
-    interpolated_images = run_interpolation(
-        prompts, scale_factor=2, batch_size=1, latent_fn=latent_sample
-    )
+# `scale_factor` indicates the number of images between each consecutive prompt.
+# """
+# if MAIN:
+#     prompts = [
+#         "a photograph of a cat on a lawn",
+#         "a photograph of a dog on a lawn",
+#         "a photograph of a bunny on a lawn",
+#     ]
+#     interpolated_images = run_interpolation(
+#         prompts, scale_factor=2, batch_size=1, latent_fn=latent_sample
+#     )
 
-# %%
-"""
-## Saving a GIF
+# # %%
+# """
+# ## Saving a GIF
 
-Save your list of images as a GIF by running the following:
-"""
-
-
-def save_gif(images: list[Image.Image], filename):
-    # Duration argument is in ms, loop=0 specifies looping infinitely
-    images[0].save(
-        filename, save_all=True, append_images=images[1:], duration=100, loop=0
-    )
+# Save your list of images as a GIF by running the following:
+# """
 
 
-if MAIN:
-    save_gif(interpolated_images, "w3d5_animation1.gif")
-
-# %%
-"""
-## Speeding up interpolation
-
-Consider how you might speed up the interpolation inference process above. Note that batching multiple prompts (making sure to concatenate their correspondings unconditional embeddings as expected) tends to speed up the per-prompt generation time. However, this also affects the random generation of Gaussian noise fed into the U-Net as the noise is different for each sample, which in practice tends to result in images that don't always "fit" together or play smoothly in an animation. Think about how you can modify the latent noise generation step to batch prompts without affecting the randomness relative to individually feeding prompts into the model, and try implementing this change.
-
-Here, a new function `latent_sample_same()` is created which uses the same inputs as `latent_sample()` and is intended to output the same noise for a batch size of 1. For larger batches, it should use the same noise for each image in the batch. Implement this quick change, looking back at `latent_sample()` if needed, and try testing whether a larger interpolation batch size with this sampling function improves performance on your system. This will depend on your maximum batch size usually constrained by GPU memory size as well as other minor factors.
-"""
+# def save_gif(images: list[Image.Image], filename):
+#     # Duration argument is in ms, loop=0 specifies looping infinitely
+#     images[0].save(
+#         filename, save_all=True, append_images=images[1:], duration=100, loop=0
+#     )
 
 
-def latent_sample_same(config: StableDiffusionConfig, batch_size: int) -> t.Tensor:
-    if "SOLUTION":
-        latents = t.randn(
-            (
-                1,
-                cast(int, pretrained.unet.in_channels),
-                config.height // 8,
-                config.width // 8,
-            ),
-            generator=config.generator,
-        ).to(DEVICE)
-        latents = latents.expand(batch_size, -1, -1, -1)
-    return latents
+# if MAIN:
+#     save_gif(interpolated_images, "w3d5_animation1.gif")
+
+# # %%
+# """
+# ## Speeding up interpolation
+
+# Consider how you might speed up the interpolation inference process above. Note that batching multiple prompts (making sure to concatenate their correspondings unconditional embeddings as expected) tends to speed up the per-prompt generation time. However, this also affects the random generation of Gaussian noise fed into the U-Net as the noise is different for each sample, which in practice tends to result in images that don't always "fit" together or play smoothly in an animation. Think about how you can modify the latent noise generation step to batch prompts without affecting the randomness relative to individually feeding prompts into the model, and try implementing this change.
+
+# Here, a new function `latent_sample_same()` is created which uses the same inputs as `latent_sample()` and is intended to output the same noise for a batch size of 1. For larger batches, it should use the same noise for each image in the batch. Implement this quick change, looking back at `latent_sample()` if needed, and try testing whether a larger interpolation batch size with this sampling function improves performance on your system. This will depend on your maximum batch size usually constrained by GPU memory size as well as other minor factors.
+# """
 
 
-# %%
-"""
-For example, here is a call to `run_interpolation()` that uses a batch size of 2 and passes in your modified `latent_sample_same()` function to generate random noise.
-"""
-if MAIN:
-    prompts = [
-        "a photograph of a cat on a lawn",
-        "a photograph of a dog on a lawn",
-        "a photograph of a bunny on a lawn",
-    ]
-    interpolated_images = run_interpolation(
-        prompts, scale_factor=2, batch_size=2, latent_fn=latent_sample_same
-    )
-    save_gif(interpolated_images, "w3d5_animation2.gif")
+# def latent_sample_same(config: StableDiffusionConfig, batch_size: int) -> t.Tensor:
+#     if "SOLUTION":
+#         latents = t.randn(
+#             (
+#                 1,
+#                 cast(int, pretrained.unet.in_channels),
+#                 config.height // 8,
+#                 config.width // 8,
+#             ),
+#             generator=config.generator,
+#         ).to(DEVICE)
+#         latents = latents.expand(batch_size, -1, -1, -1)
+#     return latents
+
+
+# # %%
+# """
+# For example, here is a call to `run_interpolation()` that uses a batch size of 2 and passes in your modified `latent_sample_same()` function to generate random noise.
+# """
+# if MAIN:
+#     prompts = [
+#         "a photograph of a cat on a lawn",
+#         "a photograph of a dog on a lawn",
+#         "a photograph of a bunny on a lawn",
+#     ]
+#     interpolated_images = run_interpolation(
+#         prompts, scale_factor=2, batch_size=2, latent_fn=latent_sample_same
+#     )
+#     save_gif(interpolated_images, "w3d5_animation2.gif")
 
 """
 
@@ -539,42 +546,115 @@ Try to identify changes in prompts that induce stylistic changes in the resultin
 - [HuggingFace blog post on Stable Diffusion](https://huggingface.co/blog/stable_diffusion>https://huggingface.co/blog/stable_diffusion), a great resource for introducing the model and implementing an inference pipeline.
 """
 
+
 # %%
+IMAGE_PATH = Path("/workspace/Stable-Diffusion-Interp/images")
+
+
 def plot_image(image, **kwargs):
+    image = to_numpy(image)
     if len(image.shape) == 4:
         facet_col = 0
     else:
         facet_col = None
     if image.shape[-3] == 3:
         image = einops.rearrange(image, "... rgb height width -> ... height width rgb")
-    image = image.clamp(0, 255)
+    image = np.clip(image, 0, 255)
     imshow(image, facet_col=facet_col, **kwargs)
 
+
+def save_image(tensor, name):
+    tensor = tensor.squeeze()
+    if tensor.shape[-3] == 3:
+        tensor = einops.rearrange(tensor, "rgb h w -> h w rgb")
+    tensor = to_numpy(tensor)
+    tensor = np.clip(tensor, 0, 255)
+    tensor = tensor.round().astype("uint8")
+    image = Image.fromarray(tensor)
+    if not name.endswith(".png"):
+        name = name + ".png"
+    image.save(IMAGE_PATH / name)
+
+
+save_image(images[0], "test2")
+
+
+def load_image(name):
+    if not name.endswith(".png"):
+        name = name + ".png"
+    image = Image.open(IMAGE_PATH / name)
+    image = np.array(image)
+    image = einops.rearrange(image, "h w rgb -> rgb h w")
+    image = torch.tensor(image, dtype=torch.float32, device="cuda")
+    return image
+
+
+image = load_image("test")
+plot_image(image)
+
 MAGIC_LATENT_SCALE = 0.18215
+
+
 def encode_and_decode_image(image):
     image = image.squeeze()
-    assert image.shape == (3, 512, 512)
+    if image.shape != (3, 512, 512):
+        assert image.shape == (512, 512, 3)
+        image = einops.rearrange(image, "height width rgb -> rgb height width")
+    if not isinstance(image, torch.Tensor):
+        image = torch.tensor(image)
+    image = image.float().cuda()
     image = image[None]
-    latent = pretrained.vae.encode(image).latent_dist.mean # type: ignore
+    latent = pretrained.vae.encode(image).latent_dist.mean  # type: ignore
     scaled_latent = latent / MAGIC_LATENT_SCALE
-    output = pretrained.vae.decode(scaled_latent).sample.squeeze() # type: ignore
+    output = pretrained.vae.decode(scaled_latent).sample.squeeze()  # type: ignore
     output_image = to_numpy(output * 255 / 2)
     print(image.shape, output_image.shape)
-    plot_image(np.stack([to_numpy(image.squeeze()), output_image]), facet_labels=["original", "recons"])
+    plot_image(
+        np.stack([to_numpy(image.squeeze()), output_image]),
+        facet_labels=["original", "recons"],
+    )
+
+
 encode_and_decode_image(image)
+
+# %%
+
+
+def test(steps=10, seed=1):
+    s = time.time()
+    config = StableDiffusionConfig(
+        generator=t.manual_seed(seed), num_inference_steps=steps
+    )  # Pass in seed generator to create the initial latent noise
+    prompt = [
+        "A digital illustration of a medieval town",
+        "A digital illustration of a Greek town",
+        "A digital illustration of a modern town",
+        "A digital illustration of a prehistoric town",
+        "A cuddle",
+    ]
+    latents = latent_sample(config, len(prompt))
+    images = stable_diffusion_inference(pretrained, config, prompt, latents)
+    print(time.time() - s)
+    imshow(images, facet_col=0)
+
+
 # %%
 class Toy(nn.Module):
     def __init__(self):
         super().__init__()
         self.W = nn.Parameter(torch.arange(4).float())
-    
+
     def forward(self, x):
         return x @ self.W
+
+
 toy = Toy()
 x = torch.ones(4)
 print(toy(x))
 
-handle = toy.register_forward_hook(lambda module, input, output: print(module, input, output))
+handle = toy.register_forward_hook(
+    lambda module, input, output: print(module, input, output)
+)
 print(toy(x))
 handle.remove()
 handle = toy.register_forward_pre_hook(lambda module, input: print(module, input))
@@ -586,13 +666,19 @@ try:
 except:
     print("Couldn't reset all")
 HANDLES = []
+
+
 def add_hook(module, hook):
     handle = module.register_forward_hook(hook)
     HANDLES.append(handle)
+
+
 def reset_all_hooks():
     for handle in HANDLES:
         handle.remove()
     HANDLES.clear()
+
+
 # %%
 def show_shapes_hook(module, input, output, name):
     print(name)
@@ -602,36 +688,106 @@ def show_shapes_hook(module, input, output, name):
             print(f"\tInput {i}:", inp.shape, inp.dtype)
         elif isinstance(inp, int) or isinstance(inp, float):
             print(f"\tInput {i}:", inp)
-        else:    
+        else:
             print(f"\tInput {i}:", type(inp))
     if isinstance(output, torch.Tensor):
         print(f"\tOutput:", output.shape, output.dtype)
-    else:    
+    elif isinstance(output, tuple):
+        for i, outp in enumerate(output):
+            if isinstance(outp, torch.Tensor):
+                print(f"\tOutput {i}:", outp.shape, outp.dtype)
+            elif isinstance(outp, int) or isinstance(outp, float):
+                print(f"\tOutput {i}:", outp)
+            else:
+                print(f"\tOutput {i}:", type(outp))
+    else:
         print(f"\tOutput:", type(output))
+
+
 reset_all_hooks()
+# %%
+reset_all_hooks()
+add_hook(pretrained.unet.conv_act, partial(show_shapes_hook, name="blah"))
+test(steps=1)
+# print(1/0)
 # %%
 reset_all_hooks()
 add_hook(pretrained, partial(show_shapes_hook, name="pretrained"))
-add_hook(pretrained.vae.encoder, partial(show_shapes_hook, name="pretrained.vae.encoder"))
-add_hook(pretrained.vae.decoder, partial(show_shapes_hook, name="pretrained.vae.decoder"))
-add_hook(pretrained.text_encoder, partial(show_shapes_hook, name="pretrained.text_encoder"))
+add_hook(
+    pretrained.vae.encoder, partial(show_shapes_hook, name="pretrained.vae.encoder")
+)
+add_hook(
+    pretrained.vae.decoder, partial(show_shapes_hook, name="pretrained.vae.decoder")
+)
+add_hook(
+    pretrained.text_encoder, partial(show_shapes_hook, name="pretrained.text_encoder")
+)
 add_hook(pretrained.unet, partial(show_shapes_hook, name="pretrained.unet"))
 
 # %%
+reset_all_hooks()
+for name, mod in pretrained.unet.named_children():
+    name = "pretrained.unet." + name
+    add_hook(mod, partial(show_shapes_hook, name=name))
+test(steps=1)
+reset_all_hooks()
+for name, mod in pretrained.unet.named_modules():
+    name = "pretrained.unet." + name
+    add_hook(mod, partial(show_shapes_hook, name=name))
+test(steps=1)
 
-SEED = 1
-s = time.time()
-config = StableDiffusionConfig(
-    generator=t.manual_seed(SEED),
-    num_inference_steps=10
-)  # Pass in seed generator to create the initial latent noise
-prompt = ["A digital illustration of a medieval town", "A digital illustration of a Greek town", "A digital illustration of a modern town", "A digital illustration of a prehistoric town", "A cuddle"]
-latents = latent_sample(config, len(prompt))
-images = stable_diffusion_inference(pretrained, config, prompt, latents)
-print(time.time() - s)
-imshow(images, facet_col=0)
+# %%
+
 # %%
 reset_all_hooks()
 
 
+# %%
+reset_all_hooks()
+inp_cache = {}
+cache = {}
+def cache_hook(module, input, output, name):
+    inp_cache[name] = input
+    cache[name] = output
+    return output
+for name, mod in pretrained.unet.named_children():
+    name = "pretrained.unet." + name
+    add_hook(mod, partial(cache_hook, name=name))
+test(steps=1)
+for c, v in cache.items():
+    try:
+        print(c, v.shape)
+    except:
+         print(c, type(v))
+for c, v in inp_cache.items():
+    for i, v2 in enumerate(v):
+        try:
+            print(c, i, v2.shape)
+        except:
+            print(c, i, type(v2))
+# %%
+reset_all_hooks()
+# inp_cache = {}
+cache = []
+def cache_hook(module, input, output):
+    cache.append(input[0])
+    # cache[name] = output
+    # return output
+add_hook(pretrained.unet.time_proj, cache_hook)
+test(20)
+imshow(torch.stack(cache))
+
+# %%
+reset_all_hooks()
+for name, mod in pretrained.unet.named_children():
+    if name != "conv_act":
+        name = "pretrained.unet." + name
+        add_hook(mod, partial(show_shapes_hook, name=name))
+for name, mod in enumerate(pretrained.unet.down_blocks):
+    name = "pretrained.unet.down_blocks" + str(name)
+    add_hook(mod, partial(show_shapes_hook, name=name))
+for name, mod in enumerate(pretrained.unet.up_blocks):
+    name = "pretrained.unet.up_blocks" + str(name)
+    add_hook(mod, partial(show_shapes_hook, name=name))
+test(steps=1)
 # %%
