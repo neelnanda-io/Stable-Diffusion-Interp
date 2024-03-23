@@ -1,90 +1,10 @@
 # %%
-"""
-# W3D5 - Part 2 - Stable Diffusion
-
-## Setting up your instance
-
-In order to download the stable-diffusion models from HuggingFace, there is some setup required:
-
-1. Make a [HuggingFace account](https://huggingface.co/join) and confirm your email address.
-1. Visit [here](https://huggingface.co/CompVis/stable-diffusion-v1-4) and click `yes` to the terms and conditions (after thoroughly reading them, of course) and then click `access repository`.
-1. Generate a [HuggingFace token](https://huggingface.co/settings/tokens) with a `read` role.
-1. Run `huggingface-cli login` in your VSCode terminal and paste the token you generated above (ignore the warning text). This will allow the Python module to download the pretrained models we will be using.
-
-You should now be able to load the pretrained models in this notebook.
-
-## Introducing the model
-git 
-Before moving on to integrate CLIP into the Stable Diffusion (SD) model, it's worth briefly reviewing what we've built in Part 1. CLIP provides a text encoder and image encoder that are trained together to minimize contrastive loss, and therefore allows for embedding arbitrary text sequences in a latent space that has some relevance to images.
-
-Now, we will introduce the Stable Diffusion model, a state-of-the-art architecture that integrates the text encoder from CLIP (although other text encoders can be used) into a modified diffusion model which is similar to your work from yesterday, W3D4. The primary differences between an "ordinary" diffusion model and the Stable Diffusion model:
-
-* Text encoding is done using a frozen CLIP text encoder. By frozen, we mean the encoder was pretrained separately using the contrastive loss as described yesterday, and not modified at all during the training of SD. The vision transformer part of CLIP is not used in SD.
-* U-Net operates in a latent space which has a lower spatial dimensionality than the pixel space of the input. The schematic below describes "LDM-8" which means that the spatial dimension is shrunk by a factor of 8 in width and height. More downsampling makes everything faster, but reduces perceptual quality.
-* The encoding to and decoding from the latent space are done using a Variational Autoencoder (VAE), which is trained on the reconstruction error after compressing images into the latent space and then decompressing them again. At inference time, we have no need of the encoder portion because we start with random latents, not pixels. We only need to make one call to the VAE decoder at the very end to turn our latents back into pixels.
-
-## Schematic
-
-<p align="center">
-    <img src="w3d5_stablediff_schematic.png" width="500"/><br>
-    Source: <a href="https://huggingface.co/blog/stable_diffusion">https://huggingface.co/blog/stable_diffusion</a>
-</p>
-
-## A final product
-
-Before getting into it, here's a *very rough* example of the sort of interpolation-based animations that you will (hopefully) be generating by the end of the day with only a few minutes of runtime! Ideally, yours will be smoother and more creative given longer inference time to generate more frames. :)
-
-<p align="center">
-    <img src="w3d5_stable_diffusion_animation.gif" width="500"/><br/>
-</p>
-
-## Table of Contents
-
-- [Setting up your instance](#setting-up-your-instance)
-- [Introducing the model](#introducing-the-model)
-- [Schematic](#schematic)
-- [A final product](#a-final-product)
-- [References (optional) for Part 2](#references-optional-for-part-)
-- [Preparation](#preparation)
-- [Text encoder](#text-encoder)
-- [Getting pretrained models](#getting-pretrained-models)
-- [Tokenization](#tokenization)
-- [Assembling the inference pipeline](#assembling-the-inference-pipeline)
-- [Trying it out!](#trying-it-out)
-- [Implementing interpolation](#implementing-interpolation)
-- [Prompt Interpolation](#prompt-interpolation)
-    - [Saving a GIF](#saving-a-gif)
-- [Bonus](#bonus)
-    - [Speeding up interpolation](#speeding-up-interpolation)
-    - [Multiple prompt image generation](#multiple-prompt-image-generation)
-- [Acknowledgements](#acknowledgements)
-
-## References (optional) for Part 2
-
-- [Stable Diffusion Paper](https://arxiv.org/abs/2112.10752)
-- [HuggingFace implementation](https://huggingface.co/CompVis/stable-diffusion-v1-4)
-- [HuggingFace diffusers module](https://github.com/huggingface/diffusers/tree/71ba8aec55b52a7ba5a1ff1db1265ffdd3c65ea2)
-- [Classifier-Free Diffusion Guidance paper](https://arxiv.org/abs/2207.12598)
-
-"""
-
-# %%
-"""
-# Implementation
-
-Now, we will work on implementing Stable Diffusion according to the above schematic as each of the parts have already been implemented. Furthermore, due to the significant training time of a model, we will use pretrained models from HuggingFace: [CompVis/stable-diffusion-v1-4](https://huggingface.co/CompVis/stable-diffusion-v1-4). This pretrained Stable Diffusion pipeline includes weights for the text encoder, tokenizer, variational autoencoder, and U-Net that have been trained together (again, with a fixed pretrained text encoder).
-
-## Preparation
-
-First, we import the necessary libraries, define a config class, and provide a helper function to assist you in your implementation. This function gets the pretrained models for the tokenizer, text encoder, VAE, and U-Net. As always, it is worth reading through this code to make sure you understand what it does.
-"""
-
-# %%
 from neel.imports import *
 from neel_plotly import *
 import torch
 
 torch.set_grad_enabled(False)
+
 # %%
 
 import os
@@ -206,7 +126,7 @@ Now, we're ready to start building the model. There are only a few parts to inst
 # %%
 
 
-class Pretrained(nn.Module):
+class StableDiffusion(nn.Module):
     def __init__(self):
         super().__init__()
         self.tokenizer = load_tokenizer()
@@ -217,7 +137,7 @@ class Pretrained(nn.Module):
 
 
 if MAIN:
-    pretrained = Pretrained()
+    pretrained = StableDiffusion()
 # %%
 """
 ## Tokenization
@@ -228,7 +148,7 @@ Please implement the `uncond_embeddings` used for classifier-free guidance below
 """
 
 
-def embed_text(pretrained: Pretrained, prompt: list[str]) -> t.Tensor:
+def embed_text(pretrained: StableDiffusion, prompt: list[str]) -> t.Tensor:
     text_input = pretrained.tokenizer(
         prompt,
         padding="max_length",
@@ -294,7 +214,7 @@ Examine the existing implementation, identify which parts are missing, and imple
 
 
 def stable_diffusion_inference(
-    pretrained: Pretrained,
+    stable_diffusion: StableDiffusion,
     config: StableDiffusionConfig,
     prompt: Union[list[str], t.Tensor],
     latents: t.Tensor,
@@ -303,7 +223,7 @@ def stable_diffusion_inference(
     if isinstance(prompt, list):
         text_embeddings = None
         # [dim=0 idx 0 to n/2 are for uncond_embedding "", n/2 to n are for tokens]
-        text_embeddings = embed_text(pretrained, prompt)
+        text_embeddings = embed_text(stable_diffusion, prompt)
     elif isinstance(prompt, t.Tensor):
         text_embeddings = prompt
     scheduler.set_timesteps(config.num_inference_steps)
@@ -319,7 +239,7 @@ def stable_diffusion_inference(
             # Predict noise in latent input
             with t.no_grad():
                 if "SOLUTION":
-                    noise_pred_concat = pretrained.unet(
+                    noise_pred_concat = stable_diffusion.unet(
                         latent_input, ts, encoder_hidden_states=text_embeddings
                     )["sample"]
             if "SOLUTION":
@@ -332,7 +252,7 @@ def stable_diffusion_inference(
             # Step to previous timestep (denoising one step)
             latents = scheduler.step(noise_pred, ts, latents)["prev_sample"]  # type: ignore - this is guaranteed by diffusers
     # After inference loop, scale latent output and decode images using VAE
-    images = pretrained.vae.decode(latents / 0.18215).sample
+    images = stable_diffusion.vae.decode(latents / 0.18215).sample
     # print(images)
     images = (images * 255 / 2 + 255 / 2).clamp(0, 255)
     images = einops.rearrange(
