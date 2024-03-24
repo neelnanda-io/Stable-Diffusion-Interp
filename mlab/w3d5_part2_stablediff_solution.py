@@ -551,6 +551,8 @@ def switched_generation(c1, c2, seed=1, num_inference_steps=25, switch_timesteps
         switched_images.append(images)
     switched_images = t.stack(switched_images)
     switched_latents = t.stack([t.stack(latents) for latents in switched_latents])
+    sigmas = stable_diffusion.get_scheduler(num_inference_steps).sigmas
+    switched_latents = switched_latents / (sigmas.cuda()[None, :, None, None, None, None].pow(2)+1).sqrt()
     plot_image(switched_images[:, 0], facet_labels=[f"Switched at {switch}" for switch in switch_timesteps], title=f"{c1.capitalize()} -> {c2.capitalize()} Seed {seed}", height=300)
     plot_image(switched_images[:, 1], facet_labels=[f"Switched at {switch}" for switch in switch_timesteps], title=f"{c2.capitalize()} -> {c1.capitalize()} Seed {seed}", height=300)
     return switched_images, switched_latents
@@ -558,22 +560,100 @@ def switched_generation(c1, c2, seed=1, num_inference_steps=25, switch_timesteps
 # for seed in tqdm(range(3, 8)):
 #     switched_generation(c1, c2, seed, num_inference_steps, tuple(switch_timesteps))
 
-
-for seed in tqdm(range(1, 4)):
-    switched_generation("red", "blue", seed, num_inference_steps, switch_timesteps)
+# %%
+# for seed in tqdm(range(1, 4)):
+#     switched_generation("red", "blue", seed, num_inference_steps, switch_timesteps)
 # %%
 switched_images, switched_latents = switched_generation(
         "red", "black", 1, num_inference_steps, switch_timesteps
 )
+switched_latents = switched_latents.reshape(switched_latents.shape[:3] + (-1,))
+
 # %%
 # switched_latents.shape == [switch, step, batch, 4, 64, 64]
-switched_latents = switched_latents.reshape(switched_latents.shape[:3]+(-1,))
+
 base_trajectory_1 = switched_latents[0, :, 1]
 base_trajectory_2 = switched_latents[0, :, 0]
-line((switched_latents - base_trajectory_1[:, None]).norm(dim=-1), facet_col=2, line_labels=switch_timesteps)
-line((switched_latents - base_trajectory_2[:, None]).norm(dim=-1), facet_col=2, line_labels=switch_timesteps)
+line((switched_latents - base_trajectory_1[:, None]).norm(dim=-1)[:, :, 0], line_labels=switch_timesteps, title="Red->Black - Red normed")
+line((switched_latents - base_trajectory_2[:, None]).norm(dim=-1)[:, :, 0], line_labels=switch_timesteps, title="Red->Black - Black normed")
+line((switched_latents - base_trajectory_1[:, None]).norm(dim=-1)[:, :, 1], line_labels=switch_timesteps, title="Black->Red - Red normed")
+line((switched_latents - base_trajectory_2[:, None]).norm(dim=-1)[:, :, 1], line_labels=switch_timesteps, title="Black->Red - Black normed")
+
 # %%
-(switched_latents - base_trajectory_1[:, None]).norm(dim=-1)
+flat_latents = switched_latents.reshape(-1, switched_latents.shape[-1])
+flat_latents_centered = flat_latents - flat_latents.mean(dim=0)
+U, S, Vh = torch.linalg.svd(flat_latents_centered)
+line(S)
+Vh.shape
+# %%
+df = melt(switched_latents @ Vh[:, 0])
+df.columns = ["P0", "switch", "step", "batch"]
+df["P1"] = to_numpy(switched_latents @ Vh[:, 1]).flatten()
+df["P2"] = to_numpy(switched_latents @ Vh[:, 2]).flatten()
+df["P3"] = to_numpy(switched_latents @ Vh[:, 3]).flatten()
+df["P4"] = to_numpy(switched_latents @ Vh[:, 4]).flatten()
+df["switch"] = df["switch"].apply(lambda x: switch_timesteps[x])
+df["prompt"] = df["batch"].apply(lambda x: ["R->B", "B->R"][x])
+
+df["is_0"] = df["switch"] == 0
+
+px.scatter(df, x="P0", y="P1", color="is_0", facet_col="prompt", hover_name="step")
+
+# %%
+all_switched_latents = all_switched_latents.reshape(all_switched_latents.shape[:3]+(-1,))
+all_flat_latents = all_switched_latents.reshape(-1, all_switched_latents.shape[-1])
+all_flat_latents_centered = all_flat_latents - all_flat_latents.mean(dim=0)
+U, S, Vh = torch.pca_lowrank(all_flat_latents_centered, q=10)
+line(S)
+Vh.shape
+df = melt(all_switched_latents @ Vh[:, 0])
+df.columns = ["P0", "switch", "step", "batch"]
+df["P1"] = to_numpy(all_switched_latents @ Vh[:, 1]).flatten()
+df["P2"] = to_numpy(all_switched_latents @ Vh[:, 2]).flatten()
+df["P3"] = to_numpy(all_switched_latents @ Vh[:, 3]).flatten()
+df["P4"] = to_numpy(all_switched_latents @ Vh[:, 4]).flatten()
+# df["switch"] = df["switch"].apply(lambda x: switch_timesteps[x])
+df["prompt"] = df["batch"].apply(lambda x: ["R->B", "B->R"][x])
+
+df["is_0"] = df["switch"].apply(lambda x: 2 if x==0 else 1)
+
+px.scatter(df, color_continuous_scale="Portland", x="P0", y="P1", color="switch", facet_col="prompt", hover_name="step", size="is_0").show()
+px.scatter(df, color_continuous_scale="Portland", x="P2", y="P1", color="switch", facet_col="prompt", hover_name="step", size="is_0").show()
+px.scatter(df, color_continuous_scale="Portland", x="P2", y="P3", color="switch", facet_col="prompt", hover_name="step", size="is_0").show()
+px.scatter(df, color_continuous_scale="Portland", x="P4", y="P3", color="switch", facet_col="prompt", hover_name="step", size="is_0").show()
+
+# %%
+for i in range(10):
+    v = all_switched_latents @ Vh[:, i]
+    imshow(
+        v,
+        facet_col=-1,
+        facet_labels=["R->B", "B->R"],
+        yaxis="Switch at",
+        xaxis="Step",
+        title=f"Principal Component {i}",
+        color_continuous_midpoint=v.median().item(),
+    )
+# %%
+red_dress_latent = dress_latents_base[-1, 0]
+red_dir = Vh[:, 1].reshape(4, 64, 64)
+coeffs = torch.linspace(-200, 200, 50).cuda()
+new_latents = red_dress_latent + red_dir * coeffs[:, None, None, None]
+new_images = stable_diffusion.decode_to_image(new_latents)
+plot_image(new_images, animation=True, animation_index=to_numpy(coeffs))
+# %%
+_, dress_latents_1 = stable_diffusion.generate(prompts, num_inference_steps, identical_noise=identical_noise, seed=1)
+_, dress_latents_2 = stable_diffusion.generate(prompts, num_inference_steps, identical_noise=identical_noise, seed=2)
+_, dress_latents_3 = stable_diffusion.generate(prompts, num_inference_steps, identical_noise=identical_noise, seed=3)
+
+diff_latent_1 = dress_latents_1[-1, 0] - dress_latents_1[-1, 1]
+diff_latent_2 = dress_latents_2[-1, 0] - dress_latents_2[-1, 1]
+diff_latent_3 = dress_latents_3[-1, 0] - dress_latents_3[-1, 1]
+
+print(nutils.cos(diff_latent_1.flatten(), diff_latent_2.flatten()))
+print(nutils.cos(diff_latent_1.flatten(), diff_latent_3.flatten()))
+print(nutils.cos(diff_latent_2.flatten(), diff_latent_3.flatten()))
+# %%
 # def test(steps=10, seed=1):
 #     s = time.time()
 #     config = StableDiffusionConfig(
