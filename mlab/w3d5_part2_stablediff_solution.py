@@ -381,7 +381,7 @@ prompts = [
     "A digital illustration of a modern town",
     "A digital illustration of a prehistoric town",
 ]
-images = stable_diffusion.generate(prompts, 100)
+images, town_latents = stable_diffusion.generate(prompts, 100)
 plot_image(images)
 if ((images[0] - image).abs().max() < 0.6).item():
     print("Equals the saved image!")
@@ -400,7 +400,37 @@ prompts = [
 num_inference_steps = 25
 identical_noise = True
 seed = 1
+dress_images_base, dress_latents_base = stable_diffusion.generate(prompts, num_inference_steps, identical_noise=identical_noise, seed=seed)
 
+plot_image(dress_images_base)
+# %%
+prompts = [
+    "A red dress on a mannequin, stock photography",
+    "A black dress on a mannequin, stock photography",
+    "A green dress on a mannequin, stock photography",
+    "A blue dress on a mannequin, stock photography",
+    "A yellow dress on a mannequin, stock photography",
+    "A purple dress on a mannequin, stock photography",
+    "A white dress on a mannequin, stock photography",
+    "A beige dress on a mannequin, stock photography",
+]
+num_inference_steps = 25
+identical_noise = True
+for seed in range(1, 10):
+    dress_images_base_temp, dress_latents_base_temp = stable_diffusion.generate(prompts, num_inference_steps, identical_noise=identical_noise, seed=seed)
+
+    plot_image(dress_images_base_temp, title=f"Seed {seed}", facet_labels=[p.split(" ")[1] for p in prompts])
+# %%
+# Switching experiments
+c1 = "red"
+c2 = "black"
+prompts = [
+    f"A {c1} dress on a mannequin, stock photography",
+    f"A {c2} dress on a mannequin, stock photography",
+]
+num_inference_steps = 25
+identical_noise = True
+seed = 2
 if not isinstance(prompts, t.Tensor):
     text_embeddings = stable_diffusion.embed_text(prompts) # type: ignore
 else:
@@ -409,15 +439,19 @@ else:
 
 latents = stable_diffusion.get_latent_sample(batch_size=len(text_embeddings)//2, seed=seed, identical_noise=identical_noise)
 
+scheduler = stable_diffusion.get_scheduler(num_inference_steps)
 latents = latents * scheduler.sigmas[0]
 # latent_list = [latents]
 original_latents = t.clone(latents)
 
 switched_images = []
-for switch in range(25):
+switched_latents = []
+switch_timesteps = [0, 1, 2, 3, 4, 5, 10, 20, 24]
+for switch in switch_timesteps:
     latents = original_latents
     scheduler = stable_diffusion.get_scheduler(num_inference_steps)
-    text_embeddings = stable_diffusion.embed_text(prompts
+    text_embeddings = stable_diffusion.embed_text(prompts)
+    switched_latents.append([latents])
     with t.autocast("cuda"):
         for i, ts in enumerate(tqdm(scheduler.timesteps)):
             if i==switch:
@@ -440,17 +474,106 @@ for switch in range(25):
             )
             # Step to previous timestep (denoising one step)
             latents = scheduler.step(noise_pred, ts, latents)["prev_sample"] # type: ignore
-            # latent_list.append(latents)
+            switched_latents[-1].append(latents)
 
     images = stable_diffusion.decode_to_image(latents)
-    plot_image(images, title=f"Switch at {switch}")
+    # plot_image(images, title=f"Switch at {switch}")
     switched_images.append(images)
-
+switched_images = t.stack(switched_images)
+switched_latents = t.stack([t.stack(latents) for latents in switched_latents])
+plot_image(switched_images[:, 0], facet_labels=[f"Switched at {switch}" for switch in switch_timesteps], title=f"{c1.capitalize()} -> {c2.capitalize()} Seed {seed}", height=300)
+plot_image(switched_images[:, 1], facet_labels=[f"Switched at {switch}" for switch in switch_timesteps], title=f"{c2.capitalize()} -> {c1.capitalize()} Seed {seed}", height=300)
 # all_latents = t.stack(latent_list)
 
-plot_image(images)
+# plot_image(images)
 
 # %%
+c1 = "red"
+c2 = "black"
+num_inference_steps = 25
+identical_noise = True
+seed = 1
+switch_timesteps=(0, 1, 2, 3, 4, 5, 10, 20, 24)
+
+@cache
+def switched_generation(c1, c2, seed=1, num_inference_steps=25, switch_timesteps=(0, 1, 2, 3, 4, 5, 10, 20, 24)):
+    prompts = [
+        f"A {c1} dress on a mannequin, stock photography",
+        f"A {c2} dress on a mannequin, stock photography",
+    ]
+    identical_noise = True
+    if not isinstance(prompts, t.Tensor):
+        text_embeddings = stable_diffusion.embed_text(prompts) # type: ignore
+    else:
+        text_embeddings = prompts
+
+
+    latents = stable_diffusion.get_latent_sample(batch_size=len(text_embeddings)//2, seed=seed, identical_noise=identical_noise)
+
+    scheduler = stable_diffusion.get_scheduler(num_inference_steps)
+    latents = latents * scheduler.sigmas[0]
+    # latent_list = [latents]
+    original_latents = t.clone(latents)
+
+    switched_images = []
+    switched_latents = []
+    for switch in tqdm(switch_timesteps):
+        latents = original_latents
+        scheduler = stable_diffusion.get_scheduler(num_inference_steps)
+        text_embeddings = stable_diffusion.embed_text(prompts)
+        switched_latents.append([latents])
+        with t.autocast("cuda"):
+            for i, ts in enumerate((scheduler.timesteps)):
+                if i==switch:
+                    print("Switching at time", i, ts)
+                    text_embeddings = t.stack([
+                        text_embeddings[0],
+                        text_embeddings[1],
+                        text_embeddings[3],
+                        text_embeddings[2],
+                    ])
+                noise_pred_uncond, noise_pred_text = stable_diffusion.denoising_step(
+                    latents,
+                    text_embeddings,
+                    ts,
+                    scheduler.sigmas[i],
+                )
+                # Compute noise using guidance factor to scale influence of text prompt
+                noise_pred = noise_pred_uncond + config.guidance_scale * (
+                    noise_pred_text - noise_pred_uncond
+                )
+                # Step to previous timestep (denoising one step)
+                latents = scheduler.step(noise_pred, ts, latents)["prev_sample"] # type: ignore
+                switched_latents[-1].append(latents)
+
+        images = stable_diffusion.decode_to_image(latents)
+        # plot_image(images, title=f"Switch at {switch}")
+        switched_images.append(images)
+    switched_images = t.stack(switched_images)
+    switched_latents = t.stack([t.stack(latents) for latents in switched_latents])
+    plot_image(switched_images[:, 0], facet_labels=[f"Switched at {switch}" for switch in switch_timesteps], title=f"{c1.capitalize()} -> {c2.capitalize()} Seed {seed}", height=300)
+    plot_image(switched_images[:, 1], facet_labels=[f"Switched at {switch}" for switch in switch_timesteps], title=f"{c2.capitalize()} -> {c1.capitalize()} Seed {seed}", height=300)
+    return switched_images, switched_latents
+
+# for seed in tqdm(range(3, 8)):
+#     switched_generation(c1, c2, seed, num_inference_steps, tuple(switch_timesteps))
+
+
+for seed in tqdm(range(1, 4)):
+    switched_generation("red", "blue", seed, num_inference_steps, switch_timesteps)
+# %%
+switched_images, switched_latents = switched_generation(
+        "red", "black", 1, num_inference_steps, switch_timesteps
+)
+# %%
+# switched_latents.shape == [switch, step, batch, 4, 64, 64]
+switched_latents = switched_latents.reshape(switched_latents.shape[:3]+(-1,))
+base_trajectory_1 = switched_latents[0, :, 1]
+base_trajectory_2 = switched_latents[0, :, 0]
+line((switched_latents - base_trajectory_1[:, None]).norm(dim=-1), facet_col=2, line_labels=switch_timesteps)
+line((switched_latents - base_trajectory_2[:, None]).norm(dim=-1), facet_col=2, line_labels=switch_timesteps)
+# %%
+(switched_latents - base_trajectory_1[:, None]).norm(dim=-1)
 # def test(steps=10, seed=1):
 #     s = time.time()
 #     config = StableDiffusionConfig(
